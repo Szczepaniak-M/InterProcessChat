@@ -1,0 +1,82 @@
+The main part of communications between processes is the IPC queue named requestQueue.
+The user can send a request (struct ServerRequest) by this queue, which consists of:
+ - long sender - it is the ID of Client  or ID of process when the client is not logged in
+ - int typeOfRequest - it is the type of request, which server use to execute the correct operations
+ - char extra[65] - it is the extra argument, which is needed in joining/leaving group and showing the members of the group.
+                    In the other cases it is the array is empty and not used.
+
+The server is receiving the all request (msgtyp = 0) and execute the proper function in according to typeOfRequest:
+
+1 - Logging in:
+After receiving the request by requestQueue, the server receive the struct LogIn from IPC queue named loginQueue.
+The struct is send by client before sending ServerRequest and contains:
+ - long recipient - it is the ID of recipient used to get the correct struct from the queue.
+                    The only recipient of this type of struct is the server, so it is always equals 1
+ - char login[33] - it is the login typed by the user
+ - char password[33] - it is the login typed by the user
+ - long sender - it is the ID of process, which send the struct
+
+Next the server checks the login and password and send the response (struct LogInResponse) by the loginQueue
+ - long recipient - it is the ID of process, which send the struct LogIn
+ - long idClient - it is the ID of user from config.txt, if the login and password match to one of the user from that file
+                   If not, it is equals to -1.
+
+If the client get idClient different than -1, he/she can use the other option of program.
+If not, he/she must type login and password once again.
+
+
+2 - Logging out:
+After receiving the request by requestQueue, the server updates lists of online users
+and send the struct Message with type 'k' (struct Message is described in section "8 - receiving Messages"),
+to close users's process, which receives messages from other users.
+
+
+3 - showing online Users:
+4 - showing members of the group:
+5 - showing available groups:
+After receiving the request by requestQueue, the server looks for suitable data and send it to the property user.
+The data are send by showQueue using struct ShowResponse, which consists of:
+ - long recipient - it is the idClient of the client, which send request
+ - long listLength - it is the amount of structs ShowResponse necessary to receive by client to show complete information
+ - char list[33] - it is the one position from the list which user want to display
+                   (e.g. it can be the one of the nick of online users)
+If the user sends request to display the list of online users and there are 3 online users,
+the server will send 3 struct showQueue containing logins of the online users, which will be received and displayed by client.
+*The three options work in the same way, but server sends different information
+**Information about the name of group, which user wants to display the members is provided by `extra` in a ServerRequest
+***If the name of group, whose members user wants to display, typed by the user do not match any group, listLength is
+equals to -1 and client shows information that "There is no group with this name"
+
+
+6 - Joining in the group:
+7 - Leaving the group:
+After receiving the request by requestQueue, the server updates lists of members of the group
+and send the struct Message with type 's' (struct Message is described in section "8 - receiving Messages"),
+to the user with confirmation or rejection of the operation.
+*Information about the name of group, which user wants joins/leaves, is provided by `extra` in a ServerRequest
+
+
+8 - receiving message:
+After receiving the request by requestQueue, the server receive the struct Message from IPC queue named messageQueue.
+The struct is send by client before sending ServerRequest and contains:
+ - long idRecipient - when the message is send from user to server, it contains id of server, which is equals to 1
+                    - when the message is send from server to user, it contains idClient of the user, which will receive message
+ - char typeOfMessages - there are 4 types of messages, described below
+ - char nameRecipient[33] - the login of user or the name of group, who is a recipient
+ - char text[2049] - text of the message
+ - long idSender - clientId of the sender
+ - char nameSender[64] - name of the sender
+
+Type of messages:
+- 'u' - "user"; it is a normal message, which user send to server and server send it to recipient
+- 'g' - "group"; it is a group message, which user send to server and server send it to the members of the group
+- 'k' - "kill"; it is message, which is used to end the forked process, which receives messages. It is send to user by server,
+        when he/she wants to log out
+- 's' - "server"; it is message, which server send to a user after he/she joins/leaves the group by request.
+        In field `text`, there are information about confirmation or rejection of the request, which is displayed.
+
+After receiving the message, the server check if there is a user/group with the login/name matching to data from config.txt
+If the server find it, then send the struct Message to recipient/members of the group after changing `idRecipient` to clientId
+of particular recipient. If the server don't find matching recipient, then it send information about wrong recipient's name to the sender.
+The messages are received by forked process and displaying on the console.
+
