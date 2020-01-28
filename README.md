@@ -18,6 +18,7 @@ This will change maximum space for messages in IPC queue to 65535 bytes .
 File with source code of `server` file. The task of this code is to process a request from users, 
 sending message to other users / groups through the server and receiving messages from other users through the server.
 Functions of server:
+- read data about users and groups from `config.txt`
 - Verifying the process of logging in by client
 - Management the lists of users, online users and groups
 - Sending list of online users to the client
