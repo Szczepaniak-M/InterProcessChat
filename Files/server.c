@@ -3,94 +3,125 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
 #include <signal.h>
 #include "structures.h"
 
-void readData(User *users, Group *groups, int *userNumber, int *groupsNumber);
+int memoryId[4];
+int semaphores;
+int loginQueue;
+
+void readData(User *users, Group *groups);
 
 void readUser(char *line, User *users, int *usersNumber);
 
 void readGroup(char *line, Group *groups, int *groupsNumber);
 
-void logIn(User *users, long *onlineUsers, int *onlineUsersNumber);
+OnlineUser logIn(int loginQueue, User *users);
 
-void logOut(long clientID, long *onlineUsers, int *onlineUsersNumber);
+void newClient(OnlineUser newUser, int semaphore, OnlineUser *onlineUsers, int *onlineUsersNumber);
 
-void showOnlineUser(long clientID, User *users, long *onlineUsers, int onlineUsersNumber);
+void clientProcess(int queueId, int clientId, int semaphore, User *users, OnlineUser *onlineUsers,
+                   int *onlineUsersNumber, Group *groups);
 
-void showMembers(long clientID, char *extra, Group *groups, User *users);
+void getMessage(int queueId, int semaphore, User *users, OnlineUser *onlineUsers,
+                int *onlineUsersNumber, Group *groups);
 
-void showAvailableGroups(long clientID, Group *groups);
+void sendMessage(Message message);
 
-char *findUserById(long id, User *users);
+void sendUserMessage(Message message, int semaphore, User *users, OnlineUser *onlineUsers,
+                     int *onlineUsersNumber, Group *groups);
 
-void joinGroup(long clientID, char *extra, Group *groups, User *users);
+void sendGroupMessage(Message message, int semaphore, User *users, OnlineUser *onlineUsers,
+                      int *onlineUsersNumber, Group *groups);
 
-void leaveGroup(long clientID, char *extra, Group *groups, User *users);
+void checkAndSend(Message *message, int semaphore, User *users, OnlineUser *onlineUsers,
+                  const int *onlineUsersNumber, Group *groups);
 
-void getMessage(Group *groups, User *users);
+void showOnlineUser(int queueId, int clientId, int semaphore, User *users,
+                    OnlineUser *onlineUsers, const int *onlineUsersNumber);
 
-void sendMessage(Message message, User *users);
+void showMembers(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups);
 
-void sendUserMessage(Message message, User *users);
+void showAvailableGroups(int queueId, int clientId, Group *groups);
 
-void sendGroupMessage(Message message, Group *groups, User *users);
+void joinGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups);
 
-void checkBlock();
+void leaveGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups);
+
+void blockUser(int queueId, int clientId, int semaphore, char *extra, User *users);
+
+void blockGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups);
+
+void unblockUser(int queueId, int clientId, int semaphore, char *extra, User *users);
+
+void unblockGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups);
+
+void logOut(int queueId, int clientId, int semaphore, OnlineUser *onlineUsers, int *onlineUsersNumber);
 
 void mySignal();
 
+char *findUserLoginById(int id, User *users);
+
+int findUserIndexById(int id, User *users);
+
+int findUserIndexByName(char *name, User *users);
+
+int findGroupIndexByName(char *name, Group *groups);
+
 int main() {
     signal(SIGINT, mySignal);
-    User users[512];
-    int usersNumber = 0;
-    long onlineUsers[512];
-    int onlineUsersNumber = 0;
-    Group groups[512];
-    int groupsNumber = 0;
-    readData(users, groups, &usersNumber, &groupsNumber);
-    ServerRequest serverRequest;
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
+    loginQueue = -1;
+    while (loginQueue == -1) {
+        char textBuffer[32];
+        sprintf(textBuffer, "Type Login Queue key: ");
+        write(1, textBuffer, strlen(textBuffer) + 1);
+        read(0, textBuffer, 32);
+        int counter = 0;
+        loginQueue = readInt(&counter, textBuffer);
+        loginQueue = msgget(loginQueue, 0600 | IPC_CREAT | IPC_EXCL);
+    }
+    memoryId[0] = shmget(IPC_PRIVATE, sizeof(User) * 512, 0600);
+    memoryId[1] = shmget(IPC_PRIVATE, sizeof(OnlineUser) * 512, 0600);
+    memoryId[2] = shmget(IPC_PRIVATE, sizeof(int), 0600);
+    memoryId[3] = shmget(IPC_PRIVATE, sizeof(Group) * 512, 0600);
+    User *users = shmat(memoryId[0], 0, 0);
+    OnlineUser *onlineUsers = shmat(memoryId[1], 0, 0);
+    int *onlineUsersNumber = shmat(memoryId[2], 0, 0);
+    Group *groups = shmat(memoryId[3], 0, 0);
+
+    semaphores = semget(IPC_PRIVATE, 4, 0600);
+    for (int i = 0; i < 4; i++) {
+        struct sembuf sem = {i, 1, 0};
+        semop(semaphores, &sem, 1);
+    }
+    readData(users, groups);
+
+    OnlineUser newUser;
     while (1) {
-        msgrcv(requestQueue, &serverRequest, requestSize, 0, 0);
-        switch (serverRequest.typeOfRequest) {
-            case 1:
-                logIn(users, onlineUsers, &onlineUsersNumber);
-                break;
-            case 2:
-                logOut(serverRequest.idClient, onlineUsers, &onlineUsersNumber);
-                break;
-            case 3:
-                showOnlineUser(serverRequest.idClient, users, onlineUsers, onlineUsersNumber);
-                break;
-            case 4:
-                showMembers(serverRequest.idClient, serverRequest.extra, groups, users);
-                break;
-            case 5:
-                showAvailableGroups(serverRequest.idClient, groups);
-                break;
-            case 6:
-                joinGroup(serverRequest.idClient, serverRequest.extra, groups, users);
-                break;
-            case 7:
-                leaveGroup(serverRequest.idClient, serverRequest.extra, groups, users);
-                break;
-            case 8:
-                getMessage(groups, users);
-                break;
+        newUser = logIn(loginQueue, users);
+        if (newUser.id != -1) {
+            int processId = fork();
+            if (processId) {
+                newClient(newUser, semaphores, onlineUsers, onlineUsersNumber);
+            } else {
+                signal(SIGINT, SIG_DFL);
+                clientProcess(newUser.queueId, newUser.id, semaphores, users, onlineUsers, onlineUsersNumber, groups);
+            }
         }
     }
-    return 0;
 }
 
-void readData(User *users, Group *groups, int *userNumber, int *groupsNumber) {
+void readData(User *users, Group *groups) {
     char ch;
     char *line;
-    int file_id = open("config.txt", O_RDONLY);
+    int usersNumber = 0;
+    int groupsNumber = 0;
+
+    int file_id = open("Files/config.txt", O_RDONLY);
     while (read(file_id, &ch, 1)) {
         int counter = 2;
         while (read(file_id, &ch, 1) && ch != '\n') {
@@ -101,12 +132,11 @@ void readData(User *users, Group *groups, int *userNumber, int *groupsNumber) {
 
         read(file_id, line, counter);
         if (line[0] == 'u')
-            readUser(line, users, userNumber);
+            readUser(line, users, &usersNumber);
         else
-            readGroup(line, groups, groupsNumber);
+            readGroup(line, groups, &groupsNumber);
         free(line);
     }
-
     close(file_id);
 }
 
@@ -134,83 +164,315 @@ void readGroup(char *line, Group *groups, int *groupsNumber) {
     (*groupsNumber)++;
 }
 
-void logIn(User *users, long *onlineUsers, int *onlineUsersNumber) {
-    int loginQueue = msgget(1026, 0666 | IPC_CREAT);
+OnlineUser logIn(int loginQueue, User *users) {
     LogInRequest loginRequest;
     int requestSize = sizeof(loginRequest) - sizeof(long);
     msgrcv(loginQueue, &loginRequest, requestSize, 1, 0);
-    LogInResponse logInResponse = {loginRequest.sender, -1};
+    LogInResponse logInResponse = {loginRequest.sender, -4, -1};
     int responseSize = sizeof(logInResponse) - sizeof(long);
     int success = 0;
+    OnlineUser newUser = {-1, -1};
+
     for (int i = 0; i < 512; i++) {
         if (strcmp(loginRequest.login, users[i].login) == 0) {
+            struct sembuf semP = {0, -1, 0};
+            semop(semaphores, &semP, 1);
 
-            if (strcmp(loginRequest.password, users[i].password) == 0) {
-                logInResponse.idClient = users[i].id;
-                onlineUsers[(*onlineUsersNumber)++] = logInResponse.idClient;
+            if (users[i].loginAttempts == -3) {
+                logInResponse.clientId = users[i].loginAttempts;
+            } else if (strcmp(loginRequest.password, users[i].password) == 0) {
+                logInResponse.clientId = users[i].id;
+                logInResponse.queueId = msgget(IPC_PRIVATE, 0600);
+                newUser.id = logInResponse.clientId;
+                newUser.queueId = logInResponse.queueId;
+                users[i].loginAttempts = 0;
                 success = 1;
+            } else {
+                users[i].loginAttempts--;
+                logInResponse.clientId = users[i].loginAttempts;
             }
+
+            struct sembuf semV = {0, 1, 0};
+            semop(semaphores, &semV, 1);
             break;
         }
     }
     msgsnd(loginQueue, &logInResponse, responseSize, 0);
-
     char textPrint[100];
     if (success) {
-        sprintf(textPrint, "User with ID %ld successfully logged in\n", logInResponse.idClient);
+        sprintf(textPrint, "User with ID %d successfully logged in\n", logInResponse.clientId);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (logInResponse.clientId == -3) {
+        strcpy(textPrint, "Unsuccessfully logging. User blocked\n");
         write(1, textPrint, strlen(textPrint) + 1);
     } else {
         strcpy(textPrint, "Unsuccessfully logging\n");
         write(1, textPrint, strlen(textPrint) + 1);
     }
+    return newUser;
 }
 
-void logOut(long clientId, long *onlineUsers, int *onlineUsersNumber) {
-    int found = 0;
-    for (int i = 0; i < 512; i++) {
-        if (found) {
-            if (i < 511)
-                onlineUsers[i] = onlineUsers[i + 1];
-            else
-                onlineUsers[i] = -1;
-        } else {
-            if (onlineUsers[i] == clientId) {
-                found = 1;
-                if (i < 511)
-                    onlineUsers[i] = onlineUsers[i + 1];
-                else
-                    onlineUsers[i] = -1;
-            }
+void newClient(OnlineUser newUser, int semaphore, OnlineUser *onlineUsers, int *onlineUsersNumber) {
+    struct sembuf semP[2] = {{1, -1, 0},
+                             {2, -1, 0}};
+    semop(semaphore, semP, 2);
+
+    onlineUsers[*onlineUsersNumber] = newUser;
+    (*onlineUsersNumber)++;
+
+    struct sembuf semV[2] = {{1, 1, 0},
+                             {2, 1, 0}};
+    semop(semaphore, semV, 2);
+}
+
+void
+clientProcess(int queueId, int clientId, int semaphore, User *users, OnlineUser *onlineUsers,
+              int *onlineUsersNumber, Group *groups) {
+    ServerRequest serverRequest;
+    int requestSize = sizeof(serverRequest) - sizeof(long);
+    while (1) {
+        msgrcv(queueId, &serverRequest, requestSize, -11, 0);
+        switch (serverRequest.typeOfRequest) {
+            case 1:
+                getMessage(queueId, semaphore, users, onlineUsers, onlineUsersNumber, groups);
+                break;
+            case 2:
+                showOnlineUser(queueId, clientId, semaphore, users, onlineUsers, onlineUsersNumber);
+                break;
+            case 3:
+                showAvailableGroups(queueId, clientId, groups);
+                break;
+            case 4:
+                showMembers(queueId, clientId, semaphore, serverRequest.extra, users, groups);
+                break;
+            case 5:
+                joinGroup(queueId, clientId, semaphore, serverRequest.extra, users, groups);
+                break;
+            case 6:
+                leaveGroup(queueId, clientId, semaphore, serverRequest.extra, users, groups);
+                break;
+            case 7:
+                blockUser(queueId, clientId, semaphore, serverRequest.extra, users);
+                break;
+            case 8:
+                blockGroup(queueId, clientId, semaphore, serverRequest.extra, users, groups);
+                break;
+            case 9:
+                unblockUser(queueId, clientId, semaphore, serverRequest.extra, users);
+                break;
+            case 10:
+                unblockGroup(queueId, clientId, semaphore, serverRequest.extra, users, groups);
+                break;
+            case 11:
+                logOut(queueId, clientId, semaphore, onlineUsers, onlineUsersNumber);
+                break;
         }
     }
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    Message kill = {clientId, 'k', "", "", 1, "server"};
-    int killSize = sizeof(kill) - sizeof(long);
-    msgsnd(messageQueue, &kill, killSize, 0);
-    (*onlineUsersNumber)--;
-    char textPrint[100];
-    sprintf(textPrint, "User with ID %ld successfully logged out\n", clientId);
-    write(1, textPrint, strlen(textPrint) + 1);
 }
 
-void showOnlineUser(long clientId, User *users, long *onlineUsers, int onlineUsersNumber) {
-    int showQueue = msgget(1027, 0666 | IPC_CREAT);
-    ShowResponse showResponse = {clientId, onlineUsersNumber, ""};
-    int responseSize = sizeof(showResponse) - sizeof(long);
-    for (int i = 0; i < onlineUsersNumber; i++) {
-        char *name = findUserById(onlineUsers[i], users);
-        strcpy(showResponse.list, name);
-        showResponse.listLength = onlineUsersNumber;
-        msgsnd(showQueue, &showResponse, responseSize, 0);
+void getMessage(int queueId, int semaphore, User *users, OnlineUser *onlineUsers,
+                int *onlineUsersNumber, Group *groups) {
+    Message message;
+    int messageSize = sizeof(message) - sizeof(long);
+    msgrcv(queueId, &message, messageSize, 12, 0);
+    char textPrint[100];
+    sprintf(textPrint, "Server got message from User with ID %d \n", message.senderId);
+    write(1, textPrint, strlen(textPrint) + 1);
+    strcpy(message.nameSender, findUserLoginById(message.senderId, users));
+    if (message.typeOfMessage == 0)
+        sendUserMessage(message, semaphore, users, onlineUsers, onlineUsersNumber, groups);
+    else
+        sendGroupMessage(message, semaphore, users, onlineUsers, onlineUsersNumber, groups);
+}
+
+void sendUserMessage(Message message, int semaphore, User *users, OnlineUser *onlineUsers,
+                     int *onlineUsersNumber, Group *groups) {
+    for (int i = 0; i < 512; i++) {
+        if (strcmp(message.nameRecipient, users[i].login) == 0) {
+            message.recipientId = users[i].id;
+            checkAndSend(&message, semaphore, users, onlineUsers, onlineUsersNumber, groups);
+            return;
+        }
     }
-    char textPrint[100];
-    sprintf(textPrint, "User with ID %ld got list of Online Users\n", clientId);
+    message.typeOfMessage = 2;
+    char textPrint[256];
+    sprintf(textPrint, "Server didn't send message to User %s, because recipient does not exist\n",
+            message.nameRecipient);
+    strcpy(message.text, textPrint);
+    sendMessage(message);
+    sprintf(textPrint, "Server didn't send message from User %s to User %s, because recipient does not exist\n",
+            message.nameSender, message.nameRecipient);
     write(1, textPrint, strlen(textPrint) + 1);
 }
 
-void showMembers(long clientId, char *extra, Group *groups, User *users) {
-    int showQueue = msgget(1027, 0666 | IPC_CREAT);
-    ShowResponse showResponse = {clientId, -1, ""};
+void sendGroupMessage(Message message, int semaphore, User *users, OnlineUser *onlineUsers,
+                      int *onlineUsersNumber, Group *groups) {
+    message.recipientId = message.senderId;
+    char copyText[2048];
+    for (int i = 0; i < 512; i++) {
+        if (strcmp(message.nameRecipient, groups[i].name) == 0) {
+            struct sembuf semP = {3, -1, 0};
+            semop(semaphore, &semP, 1);
+            strcpy(copyText, message.text);
+            for (int j = 0; j < groups[i].membersNumber; j++) {
+                strcpy(message.text, copyText);
+                if (groups[i].members[j] != message.senderId) {
+                    message.recipientId = groups[i].members[j];
+                    checkAndSend(&message, semaphore, users, onlineUsers, onlineUsersNumber, groups);
+                }
+            }
+            struct sembuf semV = {3, 1, 0};
+            semop(semaphore, &semV, 1);
+            return;
+        }
+    }
+    char textPrint[256];
+    message.typeOfMessage = 2;
+    sprintf(textPrint, "Server didn't send message to Group %s, because recipient doesn't exist \n",
+            message.nameRecipient);
+    strcpy(message.text, textPrint);
+    sendMessage(message);
+    sprintf(textPrint, "Server didn't send message from User %s to Group %s, because recipient doesn't exist\n",
+            message.nameSender, message.nameRecipient);
+    write(1, textPrint, strlen(textPrint) + 1);
+}
+
+void checkAndSend(Message *message, int semaphore, User *users, OnlineUser *onlineUsers,
+                  const int *onlineUsersNumber, Group *groups) {
+    char textPrint[256];
+    int senderQueue = message->queueId;
+    int recipientType = message->typeOfMessage;
+    int check = 0;
+    if (message->typeOfMessage == 1)
+        check++;
+    struct sembuf semP[2] = {{1, -1, 0},
+                             {2, -1, 0}};
+    semop(semaphore, semP, 2);
+
+    for (int i = 0; i < *onlineUsersNumber; i++) {
+        if (message->recipientId == onlineUsers[i].id) {
+            message->queueId = onlineUsers[i].queueId;
+            check += 2;
+            break;
+        }
+    }
+
+    if (check > 1) {
+        struct sembuf semPU = {0, -1, 0};
+        semop(semaphore, &semPU, 1);
+        int recipientIndex = findUserIndexById(message->recipientId, users);
+        if (message->typeOfMessage == 0) {
+            for (int i = 0; i < users[recipientIndex].blockedUsersNumber; i++) {
+                if (users[recipientIndex].blockedUsers[i] == message->senderId) {
+                    check -= 4;
+                    break;
+                }
+            }
+        } else if (message->typeOfMessage == 1) {
+            int indexGroup = findGroupIndexByName(message->nameRecipient, groups);
+            int groupId = groups[indexGroup].id;
+            for (int i = 0; i < users[recipientIndex].blockedGroupsNumber; i++) {
+                if (users[recipientIndex].blockedGroups[i] == groupId) {
+                    check -= 4;
+                    break;
+                }
+            }
+        }
+        check += 4;
+        struct sembuf semVU = {0, 1, 0};
+        semop(semaphore, &semVU, 1);
+    }
+
+    if (check == 0) {
+        message->typeOfMessage = 2;
+        sprintf(textPrint, "Server didn't send message to User %s, because the User is offline",
+                message->nameRecipient);
+        strcpy(message->text, textPrint);
+        sprintf(textPrint, "Server didn't send message from User %s to User %s, because the User is offline\n",
+                message->nameSender, message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (check == 1) {
+        message->typeOfMessage = 2;
+        sprintf(textPrint, "Server didn't send message to User %s in Group %s, because the User is offline",
+                findUserLoginById(message->recipientId, users), message->nameRecipient);
+        strcpy(message->text, textPrint);
+        sprintf(textPrint,
+                "Server didn't send message from User %s to User %s in Group %s, because the User is offline\n",
+                message->nameSender, findUserLoginById(message->recipientId, users), message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (check == 2) {
+        message->typeOfMessage = 2;
+        message->queueId = senderQueue;
+        sprintf(textPrint, "Server didn't send message to User %s, because the User blocked you",
+                message->nameRecipient);
+        strcpy(message->text, textPrint);
+        sprintf(textPrint,
+                "Server didn't send message from User %s to User %s, because the Sender is blocked by Recipient\n",
+                message->nameSender, message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (check == 3) {
+        message->typeOfMessage = 2;
+        message->queueId = senderQueue;
+        sprintf(textPrint,
+                "Server didn't send message to User %s in Group %s, because the Group is blocked by Recipient",
+                findUserLoginById(message->recipientId, users), message->nameRecipient);
+        strcpy(message->text, textPrint);
+        sprintf(textPrint,
+                "Server didn't send message from User %s to User %s in Group %s, because the Group is blocked by Recipient\n",
+                message->nameSender, findUserLoginById(message->recipientId, users), message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (check == 6) {
+        sprintf(textPrint,
+                "Server send message from User %s to User %s\n",
+                message->nameSender, message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    } else if (check == 7) {
+        sprintf(textPrint,
+                "Server send message from User %s to User %s in Group %s\n",
+                message->nameSender, findUserLoginById(message->recipientId, users), message->nameRecipient);
+        write(1, textPrint, strlen(textPrint) + 1);
+    }
+    sendMessage(*message);
+    message->queueId = senderQueue;
+    message->typeOfMessage = recipientType;
+    struct sembuf semV[2] = {{1, 1, 0},
+                             {2, 1, 0}};
+    semop(semaphore, semV, 2);
+}
+
+void sendMessage(Message message) {
+    int messageSize = sizeof(message) - sizeof(long);
+    message.typeOfRequest++;
+    msgsnd(message.queueId, &message, messageSize, 0);
+}
+
+void showOnlineUser(int queueId, int clientId, int semaphore, User *users,
+                    OnlineUser *onlineUsers, const int *onlineUsersNumber) {
+    ShowResponse showResponse = {14, *onlineUsersNumber, ""};
+    int responseSize = sizeof(showResponse) - sizeof(long);
+
+    struct sembuf semP[2] = {{1, -1, 0},
+                             {2, -1, 0}};
+    semop(semaphore, semP, 2);
+
+    for (int i = 0; i < *onlineUsersNumber; i++) {
+        char *name = findUserLoginById(onlineUsers[i].id, users);
+        strcpy(showResponse.list, name);
+        showResponse.listLength = *onlineUsersNumber;
+        msgsnd(queueId, &showResponse, responseSize, 0);
+    }
+
+    struct sembuf semV[2] = {{1, 1, 0},
+                             {2, 1, 0}};
+    semop(semaphore, semV, 2);
+
+    char textPrint[100];
+    sprintf(textPrint, "User with ID %d got list of Online Users\n", clientId);
+    write(1, textPrint, strlen(textPrint) + 1);
+}
+
+void showMembers(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups) {
+    ShowResponse showResponse = {14, -1, ""};
     int responseSize = sizeof(showResponse) - sizeof(long);
     int idx = -1;
 
@@ -223,24 +485,30 @@ void showMembers(long clientId, char *extra, Group *groups, User *users) {
 
     char textPrint[100];
     if (idx > -1) {
+        struct sembuf semP = {3, -1, 0};
+        semop(semaphore, &semP, 1);
+
         showResponse.listLength = groups[idx].membersNumber;
         for (int i = 0; i < groups[idx].membersNumber; i++) {
-            char *name = findUserById(groups[idx].members[i], users);
+            char *name = findUserLoginById(groups[idx].members[i], users);
             strcpy(showResponse.list, name);
-            msgsnd(showQueue, &showResponse, responseSize, 0);
+            msgsnd(queueId, &showResponse, responseSize, 0);
         }
-        sprintf(textPrint, "User with ID %ld successfully got the list of members of group %s\n", clientId, extra);
+
+        struct sembuf semV = {3, 1, 0};
+        semop(semaphore, &semV, 1);
+
+        sprintf(textPrint, "User with ID %d successfully got the list of members of group %s\n", clientId, extra);
         write(1, textPrint, strlen(textPrint) + 1);
     } else {
-        sprintf(textPrint, "User with ID %ld did not get the list of members of group %s\n", clientId, extra);
+        sprintf(textPrint, "User with ID %d did not get the list of members of group %s\n", clientId, extra);
         write(1, textPrint, strlen(textPrint) + 1);
-        msgsnd(showQueue, &showResponse, responseSize, 0);
+        msgsnd(queueId, &showResponse, responseSize, 0);
     }
 }
 
-void showAvailableGroups(long clientId, Group *groups) {
-    int showQueue = msgget(1027, 0666 | IPC_CREAT);
-    ShowResponse showResponse = {clientId, 0, ""};
+void showAvailableGroups(int queueId, int clientId, Group *groups) {
+    ShowResponse showResponse = {14, 0, ""};
     int responseSize = sizeof(showResponse) - sizeof(long);
     int counter = 0;
     int idx[512];
@@ -254,15 +522,333 @@ void showAvailableGroups(long clientId, Group *groups) {
     for (int i = 0; i < counter; i++) {
         if (strcmp(groups[i].name, "") != 0) {
             strcpy(showResponse.list, groups[idx[i]].name);
-            msgsnd(showQueue, &showResponse, responseSize, 0);
+            msgsnd(queueId, &showResponse, responseSize, 0);
         }
     }
     char textPrint[100];
-    sprintf(textPrint, "User with ID %ld got list of Available Groups\n", clientId);
+    sprintf(textPrint, "User with ID %d got list of Available Groups\n", clientId);
     write(1, textPrint, strlen(textPrint) + 1);
 }
 
-char *findUserById(long id, User *users) {
+void joinGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups) {
+    int index = findGroupIndexByName(extra, groups);
+    if (index != -1) {
+        struct sembuf semP = {3, -1, 0};
+        semop(semaphore, &semP, 1);
+
+        for (int j = 0; j < groups[index].membersNumber; j++) {
+            if (groups[index].members[j] == clientId) {
+                index = -2;
+                break;
+            }
+        }
+        if (index != -2)
+            groups[index].members[groups[index].membersNumber++] = clientId;
+
+        struct sembuf semV = {3, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[100];
+    if (index == -1) {
+        sprintf(message.text, "You cannot join to Group %s, because it doesn't exist\n", extra);
+        sprintf(textPrint, "User %s cannot join to Group %s, because it doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    } else if (index == -2) {
+        sprintf(message.text, "You cannot join to Group %s, because you are already a member of the group\n", extra);
+        sprintf(textPrint, "User %s cannot join to Group %s, because he/she is already a member of the group\n",
+                findUserLoginById(clientId, users), extra);
+    } else {
+        sprintf(message.text, "You have joined to Group %s\n", extra);
+        sprintf(textPrint, "User %s have joined to Group %s\n", findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void leaveGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups) {
+    int index = findGroupIndexByName(extra, groups);
+    int success = 0;
+    if (index != -1) {
+        struct sembuf semP = {3, -1, 0};
+        semop(semaphore, &semP, 1);
+
+        for (int i = 0; i < groups[index].membersNumber; i++) {
+            if (success) {
+                if (i < 511)
+                    groups[index].members[i] = groups[index].members[i + 1];
+                else
+                    groups[index].members[i] = -1;
+            } else {
+                if (groups[index].members[i] == clientId) {
+                    success = 1;
+                    if (i < 511)
+                        groups[index].members[i] = groups[index].members[i + 1];
+                    else
+                        groups[index].members[i] = -1;
+                }
+            }
+        }
+        if (success)
+            groups[index].membersNumber--;
+        struct sembuf semV = {3, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[128];
+    if (index != -1 && success) {
+        sprintf(message.text, "You have left Group %s\n", extra);
+        sprintf(textPrint, "User %s have left Group %s\n", findUserLoginById(clientId, users), extra);
+    } else if (index != -1) {
+        sprintf(message.text, "You cannot left Group %s, because you aren't a member of the group\n", extra);
+        sprintf(textPrint, "User %s cannot left Group %s, because he/she isn't a member of the group\n",
+                findUserLoginById(clientId, users), extra);
+    } else {
+        sprintf(message.text, "You cannot left Group %s, because the group does not exist\n", extra);
+        sprintf(textPrint, "User %s cannot left Group %s, because the group doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void blockUser(int queueId, int clientId, int semaphore, char *extra, User *users) {
+    int clientIndex = findUserIndexById(clientId, users);
+    int blockIndex = findUserIndexByName(extra, users);
+    if (blockIndex != -1) {
+        struct sembuf semP = {0, -1, 0};
+        semop(semaphore, &semP, 1);
+
+        for (int j = 0; j < users[clientIndex].blockedUsersNumber; j++) {
+            if (users[clientIndex].blockedUsers[j] == users[blockIndex].id) {
+                blockIndex = -2;
+                break;
+            }
+        }
+        if (users[blockIndex].id == clientId)
+            blockIndex = -3;
+
+        if (blockIndex >= 0)
+            users[clientIndex].blockedUsers[users[clientIndex].blockedUsersNumber++] = users[blockIndex].id;
+
+        struct sembuf semV = {0, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[128];
+    if (blockIndex == -1) {
+        sprintf(message.text, "You cannot block User %s, because he/she doesn't exist\n", extra);
+        sprintf(textPrint, "User %s cannot block User %s, because he/she doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    } else if (blockIndex == -2) {
+        sprintf(message.text, "You cannot block User %s, because he/she is already blocked\n", extra);
+        sprintf(textPrint, "User %s cannot block User %s, because he/she is already blocked\n",
+                findUserLoginById(clientId, users), extra);
+    } else if (blockIndex == -3) {
+        sprintf(message.text, "You cannot block yourself\n");
+        sprintf(textPrint, "User %s cannot block himself/herself\n", extra);
+    } else {
+        sprintf(message.text, "You have blocked User %s\n", extra);
+        sprintf(textPrint, "User %s have blocked User %s\n", findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void blockGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups) {
+    int clientIndex = findUserIndexById(clientId, users);
+    int blockIndex = findGroupIndexByName(extra, groups);
+    if (blockIndex != -1) {
+        struct sembuf semP = {0, -1, 0};
+        semop(semaphore, &semP, 1);
+
+        for (int j = 0; j < users[clientIndex].blockedGroupsNumber; j++) {
+            if (users[clientIndex].blockedGroups[j] == users[blockIndex].id) {
+                blockIndex = -2;
+                break;
+            }
+        }
+        if (blockIndex != -2)
+            users[clientIndex].blockedGroups[users[clientIndex].blockedGroupsNumber++] = groups[blockIndex].id;
+
+        struct sembuf semV = {0, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[128];
+    if (blockIndex == -1) {
+        sprintf(message.text, "You cannot block Group %s, because it doesn't exist\n", extra);
+        sprintf(textPrint, "User %s cannot block Group %s, because it doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    } else if (blockIndex == -2) {
+        sprintf(message.text, "You cannot block Group %s, because it is already blocked\n", extra);
+        sprintf(textPrint, "User %s cannot block Group %s, because it is already blocked\n",
+                findUserLoginById(clientId, users), extra);
+    } else {
+        sprintf(message.text, "You have blocked Group %s\n", extra);
+        sprintf(textPrint, "User %s have blocked Group %s\n", findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void unblockUser(int queueId, int clientId, int semaphore, char *extra, User *users) {
+    int clientIndex = findUserIndexById(clientId, users);
+    int blockIndex = findUserIndexByName(extra, users);
+    int success = 0;
+    if (blockIndex != -1) {
+        struct sembuf semP = {0, -1, 0};
+        semop(semaphore, &semP, 1);
+        for (int i = 0; i < users[clientIndex].blockedUsersNumber; i++) {
+            if (success) {
+                if (i < 511)
+                    users[clientIndex].blockedUsers[i] = users[clientIndex].blockedUsers[i + 1];
+                else
+                    users[clientIndex].blockedUsers[i] = -1;
+            } else {
+                if (users[clientIndex].blockedUsers[i] == users[blockIndex].id) {
+                    success = 1;
+                    if (i < 511)
+                        users[clientIndex].blockedUsers[i] = users[clientIndex].blockedUsers[i + 1];
+                    else
+                        users[clientIndex].blockedUsers[i] = -1;
+                }
+            }
+        }
+        if (success)
+            users[clientIndex].blockedUsersNumber--;
+        struct sembuf semV = {0, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[100];
+    if (blockIndex >= 0 && success) {
+        sprintf(message.text, "You have unblocked User %s\n", extra);
+        sprintf(textPrint, "User %s have unblocked User %s\n", findUserLoginById(clientId, users), extra);
+    } else if (blockIndex >= 0) {
+        sprintf(message.text, "You cannot unblock User %s, because you didn't block the user\n", extra);
+        sprintf(textPrint, "User %s cannot unblock User: %s, because he/she didn't block the user\n",
+                findUserLoginById(clientId, users), extra);
+    } else {
+        sprintf(message.text, "You cannot unblock User %s, because the user doesn't exist\n", extra);
+        sprintf(textPrint, "User %s cannot unblock User: %s, because the user doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void unblockGroup(int queueId, int clientId, int semaphore, char *extra, User *users, Group *groups) {
+    int clientIndex = findUserIndexById(clientId, users);
+    int blockIndex = findGroupIndexByName(extra, groups);
+    int success = 0;
+    if (blockIndex != -1) {
+        struct sembuf semP = {0, -1, 0};
+        semop(semaphore, &semP, 1);
+        for (int i = 0; i < users[clientIndex].blockedGroupsNumber; i++) {
+            if (success) {
+                if (i < 511)
+                    users[clientIndex].blockedGroups[i] = users[clientIndex].blockedGroups[i + 1];
+                else
+                    users[clientIndex].blockedGroups[i] = -1;
+            } else {
+                if (users[clientIndex].blockedGroups[i] == groups[blockIndex].id) {
+                    success = 1;
+                    if (i < 511)
+                        users[clientIndex].blockedGroups[i] = users[clientIndex].blockedGroups[i + 1];
+                    else
+                        users[clientIndex].blockedGroups[i] = -1;
+                }
+            }
+        }
+        if (success)
+            users[clientIndex].blockedGroupsNumber--;
+        struct sembuf semV = {0, 1, 0};
+        semop(semaphore, &semV, 1);
+    }
+    Message message = {13, clientId, queueId, 2, "", "", 1, "server"};
+    int messageSize = sizeof(message) - sizeof(long);
+    char textPrint[100];
+    if (blockIndex >= 0 && success) {
+        sprintf(message.text, "You have unblocked Group %s\n", extra);
+        sprintf(textPrint, "User %s have unblocked Group %s\n", findUserLoginById(clientId, users), extra);
+    } else if (blockIndex >= 0) {
+        sprintf(message.text, "You cannot unblock Group %s, because you didn't block the group\n", extra);
+        sprintf(textPrint, "User %s cannot unblock Group %s, because he/she didn't block the group\n",
+                findUserLoginById(clientId, users), extra);
+    } else {
+        sprintf(message.text, "You cannot unblock Group %s, because the group doesn't exist\n", extra);
+        sprintf(textPrint, "User %s cannot unblock Group %s, because the group doesn't exist\n",
+                findUserLoginById(clientId, users), extra);
+    }
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgsnd(queueId, &message, messageSize, 0);
+}
+
+void logOut(int queueId, int clientId, int semaphore, OnlineUser *onlineUsers, int *onlineUsersNumber) {
+    struct sembuf semP[2] = {{1, -1, 0},
+                             {2, -1, 0}};
+    semop(semaphore, semP, 2);
+    int found = 0;
+    for (int i = 0; i < 512; i++) {
+        if (found) {
+            if (i < 511)
+                onlineUsers[i] = onlineUsers[i + 1];
+            else
+                onlineUsers[i].id = -1;
+        } else {
+            if (onlineUsers[i].id == clientId) {
+                found = 1;
+                if (i < 511)
+                    onlineUsers[i] = onlineUsers[i + 1];
+                else
+                    onlineUsers[i].id = -1;
+            }
+        }
+    }
+    (*onlineUsersNumber)--;
+    struct sembuf semV[2] = {{1, 1, 0},
+                             {2, 1, 0}};
+    semop(semaphore, semV, 2);
+    Message kill = {13, clientId, queueId, 3, "", "", 1, "server"};
+    int killSize = sizeof(kill) - sizeof(long);
+    msgsnd(queueId, &kill, killSize, 0);
+    char textPrint[100];
+    sprintf(textPrint, "User with ID %d successfully logged out\n", clientId);
+    write(1, textPrint, strlen(textPrint) + 1);
+    msgctl(queueId, IPC_RMID, 0);
+    exit(0);
+}
+
+void mySignal() {
+    shmctl(memoryId[3], IPC_RMID, 0);
+    shmctl(memoryId[0], IPC_RMID, 0);
+    struct sembuf semP[4] = {{0, -1, 0},
+                             {1, -1, 0},
+                             {2, -1, 0},
+                             {3, -1, 0}};
+    semop(semaphores, semP, 4);
+
+    int *OnlineUsersNumber = shmat(memoryId[2], 0, 0);
+    OnlineUser *OnlineUsers = shmat(memoryId[1], 0, 0);
+    for (int i = 0; i < *OnlineUsersNumber; i++) {
+        msgctl(OnlineUsers[i].queueId, IPC_RMID, 0);
+    }
+    shmctl(memoryId[2], IPC_RMID, 0);
+    shmctl(memoryId[1], IPC_RMID, 0);
+    semctl(semaphores, IPC_RMID, 0);
+    msgctl(loginQueue, IPC_RMID, 0);
+    exit(0);
+}
+
+char *findUserLoginById(int id, User *users) {
     for (int i = 0; i < 512; i++) {
         if (users[i].id == id)
             return users[i].login;
@@ -270,156 +856,26 @@ char *findUserById(long id, User *users) {
     return "";
 }
 
-void joinGroup(long clientId, char *extra, Group *groups, User *users) {
-    int success = 0;
+int findUserIndexById(int id, User *users) {
     for (int i = 0; i < 512; i++) {
-        if (strcmp(extra, groups[i].name) == 0) {
-            groups[i].members[groups[i].membersNumber++] = clientId;
-            success = 1;
-            break;
-        }
+        if (users[i].id == id)
+            return i;
     }
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    Message message = {clientId, 's', "", "", 1, "server"};
-    int messageSize = sizeof(message) - sizeof(long);
-    char textPrint[100];
-    if (success) {
-        sprintf(message.text, "You have joined to Group: %s\n", extra);
-        sprintf(textPrint, "User %s have joined to Group: %s\n", findUserById(clientId, users), extra);
-    } else {
-        sprintf(message.text, "You cannot join to Group: %s\n", extra);
-        sprintf(textPrint, "User %s cannot joined to Group: %s\n", findUserById(clientId, users), extra);
-    }
-    write(1, textPrint, strlen(textPrint) + 1);
-    msgsnd(messageQueue, &message, messageSize, 0);
+    return -1;
 }
 
-void leaveGroup(long clientId, char *extra, Group *groups, User *users) {
-    int idx = -1;
-    int success = 0;
+int findUserIndexByName(char *name, User *users) {
     for (int i = 0; i < 512; i++) {
-        if (strcmp(extra, groups[i].name) == 0) {
-            idx = i;
-            break;
-        }
+        if (strcmp(users[i].login, name) == 0)
+            return i;
     }
-    for (int i = 0; i < groups[idx].membersNumber; i++) {
-        if (success) {
-            if (i < 511)
-                groups[idx].members[i] = groups[idx].members[i + 1];
-            else
-                groups[idx].members[i] = -1;
-        } else {
-            if (groups[idx].members[i] == clientId) {
-                success = 1;
-                if (i < 511)
-                    groups[idx].members[i] = groups[idx].members[i + 1];
-                else
-                    groups[idx].members[i]= -1;
-            }
-        }
-    }
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    Message message = {clientId, 's', "", "", 1, "server"};
-    int messageSize = sizeof(message) - sizeof(long);
-    char textPrint[100];
-    if (idx >= 0 && success) {
-        sprintf(message.text, "You have left  Group %s\n", extra);
-        sprintf(textPrint, "User %s have left to Group: %s\n", findUserById(clientId, users), extra);
-    } else if (idx >= 0) {
-        sprintf(message.text, "You cannot left to Group %s, because you are not member of that group\n", extra);
-        sprintf(textPrint, "User %s cannot left to Group: %s, because you are not member of that group\n",
-                findUserById(clientId, users), extra);
-    } else {
-        sprintf(message.text, "You cannot left to Group %s, because that group does not exist\n", extra);
-        sprintf(textPrint, "User %s cannot left to Group: %s, because that group does not exist\n",
-                findUserById(clientId, users), extra);
-    }
-    write(1, textPrint, strlen(textPrint) + 1);
-    msgsnd(messageQueue, &message, messageSize, 0);
+    return -1;
 }
 
-
-void getMessage(Group *groups, User *users) {
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    Message message;
-    int messageSize = sizeof(message) - sizeof(long);
-    msgrcv(messageQueue, &message, messageSize, 1, 0);
-    char textPrint[100];
-    sprintf(textPrint, "Server get message from User with ID %ld \n", message.idSender);
-    write(1, textPrint, strlen(textPrint) + 1);
-    strcpy(message.nameSender, findUserById(message.idSender, users));
-    if (message.typeOfMessage == 'u')
-        sendUserMessage(message, users);
-    else
-        sendGroupMessage(message, groups, users);
-}
-
-void sendMessage(Message message, User *users) {
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    int messageSize = sizeof(message) - sizeof(long);
-    msgsnd(messageQueue, &message, messageSize, 0);
-    char textPrint[256];
-    if (message.idRecipient == message.idSender)
-        sprintf(textPrint, "Server did not send message from User %s to %s, because recipient does not exist\n",
-                message.nameSender, message.nameRecipient);
-    else if (message.typeOfMessage == 'u')
-        sprintf(textPrint, "Server send message from User %s to User %s \n", message.nameSender,
-                message.nameRecipient);
-    else if (message.typeOfMessage == 'g')
-        sprintf(textPrint, "Server send message from User %s User to User %s in Group %s \n", message.nameSender,
-                findUserById(message.idRecipient, users), message.nameRecipient);
-    write(1, textPrint, strlen(textPrint) + 1);
-}
-
-void sendUserMessage(Message message, User *users) {
-    char textPrint[128];
-    message.idRecipient = message.idSender;
+int findGroupIndexByName(char *name, Group *groups) {
     for (int i = 0; i < 512; i++) {
-        if (strcmp(message.nameRecipient, users[i].login) == 0) {
-            message.idRecipient = users[i].id;
-            break;
-        }
+        if (strcmp(groups[i].name, name) == 0)
+            return i;
     }
-    if (message.idSender == message.idRecipient) {
-        sprintf(textPrint, "Server did not find user with name: %s \n", message.nameRecipient);
-        strcpy(message.text, textPrint);
-    }
-    sendMessage(message, users);
-}
-
-void sendGroupMessage(Message message, Group *groups, User *users) {
-    message.idRecipient = message.idSender;
-    for (int i = 0; i < 512; i++) {
-        if (strcmp(message.nameRecipient, groups[i].name) == 0) {
-            for (int j = 0; j < groups[i].membersNumber; j++) {
-                if (groups[i].members[j] != message.idSender) {
-                    message.idRecipient = groups[i].members[j];
-                    sendMessage(message, users);
-                }
-            }
-            break;
-        }
-    }
-    if (message.idSender == message.idRecipient) {
-        char textPrint[128];
-        sprintf(textPrint, "Server did not find group with name: %s \n", message.nameRecipient);
-        strcpy(message.text, textPrint);
-        sendMessage(message, users);
-    }
-}
-void checkBlock() {
-
-}
-
-void mySignal() {
-    int queue = msgget(1024, 0666 | IPC_CREAT);
-    msgctl(queue, IPC_RMID, 0);
-    queue = msgget(1025, 0666 | IPC_CREAT);
-    msgctl(queue, IPC_RMID, 0);
-    queue = msgget(1026, 0666 | IPC_CREAT);
-    msgctl(queue, IPC_RMID, 0);
-    queue = msgget(1027, 0666 | IPC_CREAT);
-    msgctl(queue, IPC_RMID, 0);
-    exit(0);
+    return -1;
 }

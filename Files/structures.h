@@ -3,49 +3,66 @@
 
 typedef struct User{
     int id;
-    char login[33];
-    char password[33];
+    char login[32];
+    char password[32];
+    int loginAttempts;
+    int blockedUsers[512];
+    int blockedUsersNumber;
+    int blockedGroups[512];
+    int blockedGroupsNumber;
 } User;
+
+typedef struct OnlineUser{
+    int id;
+    int queueId;
+} OnlineUser;
 
 typedef struct Group{
     int id;
-    char name[33];
+    char name[32];
     int membersNumber;
-    long members[512];
+    int members[512];
 } Group;
 
 typedef struct ServerRequest{
-    long idClient;
-    int typeOfRequest;
-    char extra[65];
+    long typeOfRequest;
+    char extra[64];
 } ServerRequest;
 
 typedef struct LogInRequest{
     long recipient;
-    char login[33];
-    char password[33];
+    char login[32];
+    char password[32];
     long sender;
 } LogInRequest;
 
 typedef struct LogInResponse{
-    long recipient;
-    long idClient;
+    long typeOfRequest;
+    int clientId;
+    int queueId;
 } LogInResponse;
 
 typedef struct ShowResponse{
-    long recipient;
-    long listLength;
-    char list[33];
+    long typeOfRequest;
+    int listLength;
+    char list[32];
 } ShowResponse;
 
 typedef struct Message{
-    long idRecipient;
-    char typeOfMessage;
-    char nameRecipient[33];
-    char text[2049];
-    long idSender;
-    char nameSender[33];
+    long typeOfRequest;
+    int recipientId;
+    int queueId;
+    int typeOfMessage;
+    char nameRecipient[32];
+    char text[2048];
+    int senderId;
+    char nameSender[32];
 } Message;
+
+void readFromBuffer(char *buffer, int size, char *destination) {
+    strncpy(destination, buffer, size);
+    destination[size - 1] = '\0';
+}
 
 int readString(int counter, char *line, char *destination) {
     int counterStart = counter;

@@ -4,21 +4,18 @@ To compile all files and get executable files, you can use `Makefile` by writing
 In a result, you get to executable file: `server` and `client`. 
 ## Running
 To run `server` type `./server` in a console.
+After running `server`, you must create login queue by typing key, which will identify this queue.
 To close `server` use `Ctrl + C`.
 To run `client` type `./client` in a console.
+To login type key of the queue, which you typed running server and then type login and password of a user.
 If you are logged in, to close `client` use proper option.
 If you aren't logged in, to close `client` use `Ctrl + C`.
-
-If you have problem with too many messages in buffer and there is no space for new messages type:
-`sudo sysctl -w kernel.msgmnb=65535`
-This will change maximum space for messages in IPC queue to 65535 bytes .
 
 ## Files
 ### server.c
 File with source code of `server` file. The task of this code is to process a request from users, 
 sending message to other users / groups through the server and receiving messages from other users through the server.
 Functions of server:
-- read data about users and groups from `config.txt`
 - Verifying the process of logging in by client
 - Management the lists of users, online users and groups
 - Sending list of online users to the client
@@ -26,6 +23,8 @@ Functions of server:
 - Sending list of available groups to the client
 - Receiving messages from clients
 - Verifying the recipients of the messages
+- Verifying if the recipients are online
+- Verifying if the message should be blocked
 - Sending message to a user
 - Sending message to a user in a given group
 
@@ -40,6 +39,7 @@ Functions of client:
 - Displaying list of available groups
 - Joining to the given group
 - Leaving the given group
+- (Un)Blocking users or groups
 - Sending message to a user
 - Sending messages to users in a given group
 - Receiving and displaying messages provided by server from other users
@@ -49,7 +49,7 @@ The responsibility of the second process is executing user requests like sending
 
 ### structures.h
 Header file contains definition of all structures using to communication client-server 
-by IPC queue. The file contains also two functions to parsing string using by `server.c` and `client.c`.
+by IPC queue. The file contains also three functions to parsing string using by `server.c` and `client.c`.
 The details of communication between clients are in file `PROTOCOL`
 
 

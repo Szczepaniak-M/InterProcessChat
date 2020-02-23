@@ -1,56 +1,49 @@
-#include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
 #include <stdio.h>
+#include <signal.h>
 #include "structures.h"
 
-void logIn(long *clientId);
+void logIn(int *clientId, int *queueId);
 
-void logOut(long *clientId);
+void logOut(int *clientId, int *queueId);
 
-void readFromBuffer(char *buffer, int size, char *destination);
+void sendRequest(int queueId, int typeOfRequest, char *textPrint);
 
-void showOnlineUser(long clientId);
+void sendMessage(int clientId, int queueId, int typeOfMessage);
 
-void showMembers(long clientId);
+void getMessage(int queueId);
 
-void showAvailableGroups(long clientId);
-
-void joinGroup(long clientId);
-
-void leaveGroup(long clientId);
-
-void sendMessage(long clientId, char typeOfMessage);
-
-void getMessage(long clientId);
-
-void readShowResponse(long clientId);
-
+void readShowResponse(int queueId);
 
 int main() {
+    int clientId = -1;
+    int queueId = -1;
     while (1) {
-        long clientId = -1;
-        logIn(&clientId);
+        logIn(&clientId, &queueId);
         int logged = 1;
         int process = fork();
         while (logged) {
             if (process == 0) {
-                getMessage(clientId);
+                getMessage(queueId);
             } else {
-                char textPrint[] = "Choose option by writing correct number: \n"
+                char textPrint[] = "\nChoose option by writing correct number: \n"
                                    "1 - show online users \n"
-                                   "2 - show members of group \n"
-                                   "3 - show available groups \n"
+                                   "2 - show available groups \n"
+                                   "3 - show members of group \n"
                                    "4 - send message to user \n"
                                    "5 - send message to group \n"
                                    "6 - join group \n"
                                    "7 - leave group\n"
-                                   "8 - log out\n"
-                                   "9 - close program \n";
+                                   "8 - block user\n"
+                                   "9 - block group\n"
+                                   "10 - unblock user\n"
+                                   "11 - unblock group\n"
+                                   "12 - log out\n"
+                                   "13 - close program \n";
 
                 write(1, textPrint, strlen(textPrint) + 1);
 
@@ -60,35 +53,50 @@ int main() {
                 readFromBuffer(textPrint, size, input);
                 int counter = 0;
                 int option = readInt(&counter, input);
-
                 switch (option) {
                     case 1:
-                        showOnlineUser(clientId);
+                        sendRequest(queueId, 2, "\nList of online Users\n");
+                        readShowResponse(queueId);
                         break;
                     case 2:
-                        showMembers(clientId);
+                        sendRequest(queueId, 3, "\nList of available groups\n");
+                        readShowResponse(queueId);
                         break;
                     case 3:
-                        showAvailableGroups(clientId);
+                        sendRequest(queueId, 4, "Type the Group name: ");
+                        write(1, "\nList of members of the group:\n", 32);
+                        readShowResponse(queueId);
                         break;
                     case 4:
-                        sendMessage(clientId, 'u');
+                        sendMessage(clientId, queueId, 0);
                         break;
                     case 5:
-                        sendMessage(clientId, 'g');
+                        sendMessage(clientId, queueId, 1);
                         break;
                     case 6:
-                        joinGroup(clientId);
+                        sendRequest(queueId, 5, "Type the Group name: ");
                         break;
                     case 7:
-                        leaveGroup(clientId);
+                        sendRequest(queueId, 6, "Type the Group name: ");
                         break;
                     case 8:
-                        logOut(&clientId);
-                        logged = 0;
+                        sendRequest(queueId, 7, "Type the User login: ");
                         break;
                     case 9:
-                        logOut(&clientId);
+                        sendRequest(queueId, 8, "Type the Group name: ");
+                        break;
+                    case 10:
+                        sendRequest(queueId, 9, "Type the User login: ");
+                        break;
+                    case 11:
+                        sendRequest(queueId, 10, "Type the Group name: ");
+                        break;
+                    case 12:
+                        logOut(&clientId, &queueId);
+                        logged = 0;
+                        break;
+                    case 13:
+                        logOut(&clientId, &queueId);
                         exit(0);
                     default:
                         strcpy(textPrint, "Wrong argument. Try once again \n");
@@ -99,11 +107,20 @@ int main() {
     }
 }
 
-void logIn(long *clientId) {
+void logIn(int *clientId, int *queueId) {
+    int loginQueue = -1;
+    while (loginQueue == -1) {
+        char textBuffer[32];
+        sprintf(textBuffer, "Type Login Queue key: ");
+        write(1, textBuffer, strlen(textBuffer) + 1);
+        read(0, textBuffer, 32);
+        int counter = 0;
+        loginQueue = readInt(&counter, textBuffer);
+        loginQueue = msgget(loginQueue, 0600);
+    }
 
-    int loginQueue = msgget(1026, 0666 | IPC_CREAT);
+    while (*clientId < 0) {
 
-    while (*clientId == -1) {
         char buffer[64];
         int size;
         LogInRequest logInRequest;
@@ -121,81 +138,60 @@ void logIn(long *clientId) {
         size = read(0, buffer, 64);
         readFromBuffer(buffer, size, logInRequest.password);
 
-        msgsnd(loginQueue, &logInRequest, loginRequestSize, 0);
-
-        int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-        ServerRequest serverRequest = {getpid(), 1, ""};
-        int requestSize = sizeof(serverRequest) - sizeof(long);
-        msgsnd(requestQueue, &serverRequest, requestSize, 0);
+        int success = msgsnd(loginQueue, &logInRequest, loginRequestSize, 0);
+        if (success == -1)
+        {
+            write(1, "Error. Lost connection with server.\n", 37);
+            exit(0);
+        }
 
         LogInResponse logInResponse;
         int loginResponseSize = sizeof(logInResponse) - sizeof(long);
         msgrcv(loginQueue, &logInResponse, loginResponseSize, getpid(), 0);
-        *clientId = logInResponse.idClient;
+        if (success == -1)
+        {
+            write(1, "Error. Lost connection with server.\n", 37);
+            exit(0);
+        }
+        *clientId = logInResponse.clientId;
+        *queueId = logInResponse.queueId;
 
-        if (*clientId == -1) {
-            strcpy(buffer, "Try once again\n");
-            write(1, buffer, strlen(buffer));
+        if (*clientId == -4) {
+            strcpy(buffer, "There is no account with this login\n");
+        } else if (*clientId == -3) {
+            strcpy(buffer, "Too many failed login attempts. The user's account is blocked\n");
+        } else if (*clientId == -1 || *clientId == -2) {
+            sprintf(buffer, "Wrong password. %d times to block this account\n", 3 + *clientId);
         } else {
             strcpy(buffer, "Successfully logged in\n");
-            write(1, buffer, strlen(buffer));
         }
+        write(1, buffer, strlen(buffer) + 1);
     }
 }
 
-void logOut(long *clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {*clientId, 2, ""};
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-    *clientId = -1;
-}
-
-void showOnlineUser(long clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 3, ""};
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-    char textPrint[64];
-    strcpy(textPrint, "\nList of online Users\n");
+void sendRequest(int queueId, int typeOfRequest, char *textPrint) {
     write(1, textPrint, strlen(textPrint) + 1);
-    readShowResponse(clientId);
-}
 
-void showMembers(long clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 4,};
+    ServerRequest serverRequest = {typeOfRequest, ""};
     int requestSize = sizeof(serverRequest) - sizeof(long);
+    char textBuffer[32];
+    if (typeOfRequest > 3) {
+        int size = read(0, textBuffer, 32);
+        readFromBuffer(textBuffer, size, serverRequest.extra);
+    }
 
-    char textBuffer[64] = "Enter the group name: ";
-    write(1, textBuffer, strlen(textBuffer) + 1);
-    int size = read(0, textBuffer, 64);
-    readFromBuffer(textBuffer, size, serverRequest.extra);
-
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-
-    char textPrint[64];
-    strcpy(textPrint, "\nList of members of the group:\n");
-    write(1, textPrint, strlen(textPrint) + 1);
-    readShowResponse(clientId);
+    int success = msgsnd(queueId, &serverRequest, requestSize, 0);
+    if (success == -1)
+    {
+        write(1,"Error. Lost connection with server.\n\n", 37);
+        exit(0);
+    }
 }
 
-void showAvailableGroups(long clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 5};
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-    char textPrint[64];
-    strcpy(textPrint, "\nList of available groups\n");
-    write(1, textPrint, strlen(textPrint) + 1);
-    readShowResponse(clientId);
-}
-
-void readShowResponse(long clientId) {
-    int showQueue = msgget(1027, 0666 | IPC_CREAT);
+void readShowResponse(int queueId) {
     ShowResponse showResponse;
     int responseSize = sizeof(showResponse) - sizeof(long);
-    msgrcv(showQueue, &showResponse, responseSize, clientId, 0);
+    msgrcv(queueId, &showResponse, responseSize, 14, 0);
     char textPrint[64];
     if (showResponse.listLength == -1) {
         strcpy(textPrint, "There is no group with this name\n\n");
@@ -208,86 +204,64 @@ void readShowResponse(long clientId) {
             strcpy(textPrint, "\n");
             write(1, textPrint, strlen(textPrint) + 1);
             if (i < showResponse.listLength - 1)
-                msgrcv(showQueue, &showResponse, responseSize, clientId, 0);
+                msgrcv(queueId, &showResponse, responseSize, 14, 0);
         }
         write(1, textPrint, strlen(textPrint) + 1);
     }
 }
 
-void joinGroup(long clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 6};
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-
-    char textBuffer[64] = "Enter the group name: ";
-    write(1, textBuffer, strlen(textBuffer) + 1);
-    int size = read(0, textBuffer, 64);
-    readFromBuffer(textBuffer, size, serverRequest.extra);
-
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-
-}
-
-void leaveGroup(long clientId) {
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 7};
-    int requestSize = sizeof(serverRequest) - sizeof(long);
-
-    char textBuffer[64] = "Enter the group name: ";
-    write(1, textBuffer, strlen(textBuffer) + 1);
-    int size = read(0, textBuffer, 64);
-    readFromBuffer(textBuffer, size, serverRequest.extra);
-
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
-
-}
-
-void sendMessage(long clientId, char typeOfMessage) {
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
-    Message message = {1, typeOfMessage, "", "", clientId, ""};
+void sendMessage(int clientId, int queueId, int typeOfMessage) {
+    Message message = {12, clientId, queueId, typeOfMessage, "", "", clientId, ""};
     int messageSize = sizeof(message) - sizeof(long);
 
-    char textBuffer[1024] = "Enter the recipient name: ";
+    char textBuffer[2048] = "Type the recipient name: ";
     write(1, textBuffer, strlen(textBuffer) + 1);
     int size = read(0, textBuffer, 64);
     readFromBuffer(textBuffer, size, message.nameRecipient);
 
-    strcpy(textBuffer, "Enter the text of message: ");
+    strcpy(textBuffer, "Type the text of message: ");
     write(1, textBuffer, strlen(textBuffer) + 1);
     size = read(0, textBuffer, 2048);
     readFromBuffer(textBuffer, size, message.text);
 
-    msgsnd(messageQueue, &message, messageSize, 0);
-
-    int requestQueue = msgget(1024, 0666 | IPC_CREAT);
-    ServerRequest serverRequest = {clientId, 8};
+    int success = msgsnd(queueId, &message, messageSize, 0);
+    if (success == -1)
+    {
+        write(1, "Error during sending the message. You were logged out\n",55);
+        exit(0);
+    }
+    ServerRequest serverRequest = {1, ""};
     int requestSize = sizeof(serverRequest) - sizeof(long);
-    msgsnd(requestQueue, &serverRequest, requestSize, 0);
+    msgsnd(queueId, &serverRequest, requestSize, 0);
 }
 
-void getMessage(long clientId) {
-    int messageQueue = msgget(1025, 0666 | IPC_CREAT);
+void getMessage(int queueId) {
     Message message;
     int messageSize = sizeof(message) - sizeof(long);
-    msgrcv(messageQueue, &message, messageSize, clientId, 0);
-    char printText[160];
-    if (message.typeOfMessage == 'u')
-        sprintf(printText, "You get direct message from %s\n", message.nameSender);
-    else if (message.typeOfMessage == 'g')
-        sprintf(printText, "You get message in %s from %s\n", message.nameRecipient, message.nameSender);
-    else if (message.typeOfMessage == 'k')
+    int success = msgrcv(queueId, &message, messageSize, 13, 0);
+    if (success == -1) {
         exit(0);
+    }
+    char printText[160];
+    if (message.typeOfMessage == 0)
+        sprintf(printText, "\nFrom %s: ", message.nameSender);
+    else if (message.typeOfMessage == 1)
+        sprintf(printText, "\nIn Group %s from %s: ", message.nameRecipient, message.nameSender);
+    else if (message.typeOfMessage == 2)
+        strcpy(printText, "\nFrom Server: ");
     else
-        strcpy(printText,"");
+        exit(0);
     write(1, printText, strlen(printText) + 1);
     write(1, message.text, strlen(message.text) + 1);
     strcpy(printText, "\n");
     write(1, printText, strlen(printText) + 1);
 }
 
-void readFromBuffer(char *buffer, int size, char *destination) {
-    strncpy(destination, buffer, size);
-    destination[size - 1] = '\0';
+void logOut(int *clientId, int *queueId) {
+    ServerRequest serverRequest = {11, ""};
+    int requestSize = sizeof(serverRequest) - sizeof(long);
+    msgsnd(*queueId, &serverRequest, requestSize, 0);
+    write(1, "You successfully logged out\n", 29);
+    *clientId = -1;
+    *queueId = -1;
 }
-
-
